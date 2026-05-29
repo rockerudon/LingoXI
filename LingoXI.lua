@@ -1,5 +1,5 @@
 addon.name      = 'LingoXI'
-addon.author    = 'rockmizx'
+addon.author    = 'rockerudon'
 addon.version   = '1.0'
 addon.desc      = 'Translate chat via Copas async HTTP.'
 addon.link      = 'https://ashitaxi.com/'
