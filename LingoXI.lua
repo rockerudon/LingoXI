@@ -37,28 +37,65 @@ local MAX_QUEUE     = 100
 local CONNECT_TIMEOUT = 5
 local SEND_TIMEOUT    = 5
 local RECEIVE_TIMEOUT = 8
-local DEDUPE_WINDOW   = 8
+-- Drops only the near-instant duplicate the game sometimes delivers for the
+-- same line (e.g. routed to multiple chat windows). Kept small so the user can
+-- intentionally repeat the same message without it being swallowed.
+local DEDUPE_WINDOW   = 0.3
 local SCROLL_FOLLOW_THRESHOLD = 32
 local FANCY_WINDOW_COLOR = {0.0, 0.0, 0.0, 0.50}
 local FANCY_LOG_COLOR    = {0.0, 0.0, 0.0, 0.0}
 local FANCY_PANEL_COLOR  = {0.02, 0.02, 0.02, 0.72}
 
+-- Static window theme colors (pushed every frame after the dynamic WindowBg).
+-- WindowBg is pushed separately because it uses the user's configurable color.
+local THEME_COLORS = {
+  { ImGuiCol_Button,             {0, 0, 0, 0.30} },
+  { ImGuiCol_ButtonHovered,      {1, 1, 1, 0.15} },
+  { ImGuiCol_ButtonActive,       {1, 1, 1, 0.30} },
+  { ImGuiCol_Border,             {0, 0, 0, 0} },
+  { ImGuiCol_FrameBg,            {0.18, 0.18, 0.18, 0.82} },
+  { ImGuiCol_FrameBgHovered,     {0.28, 0.28, 0.28, 0.88} },
+  { ImGuiCol_FrameBgActive,      {0.36, 0.36, 0.36, 0.95} },
+  { ImGuiCol_ScrollbarBg,        {0.05, 0.05, 0.05, 0.35} },
+  { ImGuiCol_ScrollbarGrab,      {0.42, 0.42, 0.42, 0.72} },
+  { ImGuiCol_ScrollbarGrabHovered, {0.56, 0.56, 0.56, 0.86} },
+  { ImGuiCol_ScrollbarGrabActive,  {0.70, 0.70, 0.70, 0.96} },
+  { ImGuiCol_CheckMark,          {0.82, 0.82, 0.82, 1.00} },
+  { ImGuiCol_SliderGrab,         {0.58, 0.58, 0.58, 0.92} },
+  { ImGuiCol_SliderGrabActive,   {0.78, 0.78, 0.78, 1.00} },
+  { ImGuiCol_Header,             {0.24, 0.24, 0.24, 0.82} },
+  { ImGuiCol_HeaderHovered,      {0.34, 0.34, 0.34, 0.90} },
+  { ImGuiCol_HeaderActive,       {0.44, 0.44, 0.44, 0.96} },
+  { ImGuiCol_ResizeGrip,         {0.50, 0.50, 0.50, 0.55} },
+  { ImGuiCol_ResizeGripHovered,  {0.68, 0.68, 0.68, 0.78} },
+  { ImGuiCol_ResizeGripActive,   {0.86, 0.86, 0.86, 0.95} },
+  { ImGuiCol_TextSelectedBg,     {0.55, 0.55, 0.55, 0.45} },
+}
+-- Total style colors pushed each frame = 1 (WindowBg) + #THEME_COLORS.
+local THEME_PUSH_COUNT = 1 + #THEME_COLORS
+
+-- Chat categories. Each entry drives BOTH the on/off filter and the color used
+-- to render that category's translated messages. `color` is the default; the
+-- user can override it per category in the config window. `desc` explains what
+-- the category covers. `modes`/`ranges` map FFXI chat mode ids to the category.
 local CHAT_FILTER_DEFS = {
-  { key = 'npc',       label = 'NPC / story', modes = {142, 144, 150, 151, 152} },
-  { key = 'local',     label = 'Local / say', modes = {0, 1, 9} },
-  { key = 'shout',     label = 'Shout / yell', modes = {2, 3, 10, 11} },
-  { key = 'tell',      label = 'Tell', modes = {4, 12} },
-  { key = 'party',     label = 'Party', modes = {5, 13, 210} },
-  { key = 'linkshell', label = 'Linkshell', modes = {6, 14, 205, 213, 214, 217} },
-  { key = 'unity',     label = 'Unity', modes = {211, 212} },
-  { key = 'emote',     label = 'Emote / examine', modes = {7, 15, 208} },
-  { key = 'system',    label = 'System / item', modes = {81, 85, 89, 90, 121, 127, 128, 131, 132, 133, 135, 136, 138, 139, 140, 141, 146, 148, 157, 161, 190, 200, 202, 204, 206, 209} },
-  { key = 'combat',    label = 'Combat', ranges = { {20, 80}, {100, 122}, {162, 191} }, modes = {129} },
-  { key = 'other',     label = 'Other', fallback = true },
+  { key = 'npc',       label = 'NPC / story',     color = {1.00, 0.95, 0.78, 1}, desc = 'NPC dialogue and story messages.',            modes = {142, 144, 150, 151, 152} },
+  { key = 'local',     label = 'Local / say',     color = {1.00, 1.00, 1.00, 1}, desc = 'Say and nearby local chat.',                  modes = {0, 1, 9} },
+  { key = 'shout',     label = 'Shout / yell',    color = {1.00, 0.66, 0.30, 1}, desc = 'Shout and yell channels.',                    modes = {2, 3, 10, 11} },
+  { key = 'tell',      label = 'Tell',            color = {1.00, 0.55, 1.00, 1}, desc = 'Private tells (/tell).',                      modes = {4, 12} },
+  { key = 'party',     label = 'Party',           color = {0.46, 1.00, 1.00, 1}, desc = 'Party and alliance chat.',                    modes = {5, 13, 210} },
+  { key = 'linkshell', label = 'Linkshell',       color = {0.55, 1.00, 0.60, 1}, desc = 'Linkshell 1 and 2 chat.',                     modes = {6, 14, 205, 213, 214, 217} },
+  { key = 'unity',     label = 'Unity',           color = {1.00, 0.98, 0.62, 1}, desc = 'Unity concord chat.',                         modes = {211, 212} },
+  { key = 'emote',     label = 'Emote / examine', color = {0.82, 0.75, 1.00, 1}, desc = 'Emotes and examine messages.',                modes = {7, 15, 208} },
+  { key = 'system',    label = 'System / item',   color = {0.70, 1.00, 0.70, 1}, desc = 'System notices and item messages.',           modes = {81, 85, 89, 90, 121, 127, 128, 131, 132, 133, 135, 136, 138, 139, 140, 141, 146, 148, 157, 161, 190, 200, 202, 204, 206, 209} },
+  { key = 'combat',    label = 'Combat',          color = {0.85, 0.85, 0.85, 1}, desc = 'Combat log (damage, actions, etc.).',         ranges = { {20, 80}, {100, 122}, {162, 191} }, modes = {129} },
+  { key = 'other',     label = 'Other',           color = {1.00, 1.00, 1.00, 1}, desc = 'Anything not covered by the categories above.', fallback = true },
 }
 
 local CHAT_FILTER_BY_MODE = {}
+local CHAT_FILTER_DEF_BY_KEY = {}
 for _, def in ipairs(CHAT_FILTER_DEFS) do
+  CHAT_FILTER_DEF_BY_KEY[def.key] = def
   for _, mode in ipairs(def.modes or {}) do
     CHAT_FILTER_BY_MODE[mode] = def.key
   end
@@ -87,9 +124,6 @@ local tradutor = {
   tick          = 0,
   max_messages  = 200,
   config_width  = 260,
-  last_detected_lang = nil,  -- Track last detected language
-  last_translation_time = -10,  -- Track when last translation finished (start with old time)
-  is_translating = false,     -- Track if currently translating
   recent_inputs = {},
   follow_bottom = true,
   scroll_to_bottom = false,
@@ -118,32 +152,16 @@ local tradutor = {
       combat = true,
       other = true,
     },
+    -- Per-category render color override. Empty means "use the category's
+    -- default color from CHAT_FILTER_DEFS"; the user can change any of them in
+    -- the config window. Keyed by category key (e.g. 'linkshell').
+    chat_colors    = {},
     window_pos     = {100, 100},
     window_size    = {700, 400},
   },
   settings_open = { false },
   history_open  = { false },
-  add_mode      = { 0 },
-  user_palette  = {
-    ["0"] = {1, 1, 1, 1},
-    ["1"] = {1, 0.99999463558197, 0.99998998641968, 1},
-    ["4"] = {1, 0.52549022436142, 1, 1},
-    ["5"] = {0.45882353186607, 0.99607843160629, 1, 1},
-    ["6"] = {0.55294120311737, 1, 0.83137255907059, 1},
-    ["11"] = {1, 0.61568629741669, 0.70980393886566, 1},
-    ["12"] = {1, 0.54509806632996, 1, 1},
-    ["13"] = {0.45882353186607, 0.99607843160629, 1, 1},
-    ["14"] = {0.55294120311737, 1, 0.83137255907059, 1},
-    ["123"] = {0.8918918967247, 0.30303663015366, 0.57292926311493, 1},
-    ["205"] = {0.55294120311737, 1, 0.83137255907059, 1},
-    ["212"] = {1, 0.99607843160629, 0.74509805440903, 1},
-    ["213"] = {0.14624109864235, 0.84169882535934, 0.39386612176895, 1},
-    ["214"] = {0.14509804546833, 0.84313726425171, 0.39215686917305, 1},
-    ["217"] = {0.14509804546833, 0.84313726425171, 0.39215686917305, 1},
-  },
 }
-
-local palette_dirty = false
 
 local ini_file = string.format('%s/LingoXI.ini', addon_dir)
 local cache_file = string.format('%s/cache.json', addon_dir)
@@ -176,30 +194,6 @@ local function clear_cache()
   save_cache()
 end
 
-local function vec2x(v)
-  if not v then return 0 end
-  local t = type(v)
-  if t == 'number' then return v end
-  if t == 'table' then return v.x or v[1] or v[0] or 0 end
-  if t == 'userdata' then
-    local ok, val = pcall(function() return v.x end)
-    if ok and val then return val end
-  end
-  return 0
-end
-
-local function vec2y(v)
-  if not v then return 0 end
-  local t = type(v)
-  if t == 'number' then return v end
-  if t == 'table' then return v.y or v[2] or v[0] or 0 end
-  if t == 'userdata' then
-    local ok, val = pcall(function() return v.y end)
-    if ok and val then return val end
-  end
-  return 0
-end
-
 local function copy_color(c)
   return {c[1], c[2], c[3], c[4]}
 end
@@ -229,42 +223,6 @@ local function migrate_fancy_theme()
     tradutor.settings.text_bg_color = copy_color(FANCY_LOG_COLOR)
     tradutor.settings.text_bg_alpha = FANCY_LOG_COLOR[4]
   end
-end
-
-local function get_cursor_screen_xy()
-  local pos, y = imgui.GetCursorScreenPos()
-  return vec2x(pos), y or vec2y(pos)
-end
-
-local function draw_settings_tool_button(size)
-  local x, y = get_cursor_screen_xy()
-  imgui.PushStyleVar(ImGuiStyleVar_FramePadding, {4, 4})
-  imgui.PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0)
-  imgui.PushStyleColor(ImGuiCol_Button,        {0, 0, 0, 0})
-  imgui.PushStyleColor(ImGuiCol_ButtonHovered, {1, 1, 1, 0.15})
-  imgui.PushStyleColor(ImGuiCol_ButtonActive,  {1, 1, 1, 0.30})
-  local clicked = imgui.Button('##lingoxi_settings', {size, size})
-  local hovered = imgui.IsItemHovered()
-  local draw = imgui.GetWindowDrawList()
-  local color = imgui.GetColorU32(hovered and {1, 1, 1, 0.95} or {0.85, 0.85, 0.85, 0.72})
-  local x1 = x + (size * 0.32)
-  local y1 = y + (size * 0.70)
-  local x2 = x + (size * 0.68)
-  local y2 = y + (size * 0.34)
-  local jaw = size * 0.12
-
-  draw:AddLine({x1, y1}, {x2, y2}, color, 2.0)
-  draw:AddLine({x1 - 2, y1 + 2}, {x1 + 4, y1 - 4}, color, 1.4)
-  draw:AddLine({x2, y2}, {x2 - jaw, y2 - jaw}, color, 1.7)
-  draw:AddLine({x2, y2}, {x2 + jaw, y2 + jaw * 0.25}, color, 1.7)
-
-  if hovered then
-    imgui.SetTooltip('Config')
-  end
-
-  imgui.PopStyleColor(3)
-  imgui.PopStyleVar(2)
-  return clicked
 end
 
 local function norm_lang(v, fallback)
@@ -327,34 +285,6 @@ local function urlencode(s)
   end):gsub(' ', '%%20'))
 end
 
-local ESC1 = string.char(0x1E)
-local ESC2 = string.char(0x1F)
-
-local function extract_color_tag(msg)
-  if not msg or #msg < 2 then return nil end
-  local pos = msg:find(ESC1, 1, true)
-  local table_id = 1
-  if not pos then
-    pos = msg:find(ESC2, 1, true)
-    table_id = 2
-  end
-  if pos and (pos + 1) <= #msg then
-    local code = msg:byte(pos + 1)
-    return table_id, code
-  end
-  return nil
-end
-
-local function argb_to_rgba(argb)
-  if not argb then return nil end
-  local a = bit.rshift(argb, 24)
-  local r = bit.band(bit.rshift(argb, 16), 0xFF)
-  local g = bit.band(bit.rshift(argb, 8), 0xFF)
-  local b = bit.band(argb, 0xFF)
-  local inv = 1 / 255
-  return { r * inv, g * inv, b * inv, a * inv }
-end
-
 local function norm_mode(mode) return mode and bit.band(mode, 0xFF) or 0 end
 
 local function chat_filter_key(mode)
@@ -373,7 +303,6 @@ local function chat_filter_allowed(e)
   return tradutor.settings.chat_filters[key] ~= false
 end
 
-
 local function norm_color(c)
   if not c or type(c) ~= 'table' then return {1,1,1,1} end
   local r = tonumber(c[1]) or 1
@@ -384,122 +313,25 @@ local function norm_color(c)
   return { clamp(r), clamp(g), clamp(b), clamp(a > 0 and a or 1) }
 end
 
-local function sorted_keys(tbl)
-  local t = {}
-  for k in pairs(tbl or {}) do table.insert(t, k) end
-  table.sort(t, function(a,b)
-    local na, nb = tonumber(a), tonumber(b)
-    if na and nb then return na < nb end
-    return tostring(a) < tostring(b)
-  end)
-  return t
-end
-
-local function cm_color(table_id, code)
-  local cm = AshitaCore and AshitaCore:GetChatManager()
-  if not cm then return nil end
-  local candidates = {
-    function() return cm:GetColor(table_id, code) end,
-    function() return cm:GetColor(table_id - 1, code) end,
-    function() return cm:GetTypeColor(code) end,
-  }
-  for _, fn in ipairs(candidates) do
-    local ok, v = pcall(fn)
-    if ok and type(v) == 'number' and v ~= 0 then
-      local c = argb_to_rgba(v)
-      if c then return c end
-    end
+-- Returns the render color for a chat category key: the user's override if set,
+-- otherwise the category's default color from CHAT_FILTER_DEFS.
+local function category_color(key)
+  local override = tradutor.settings.chat_colors[key]
+  if override then
+    return norm_color(override)
   end
-  return nil
+  local def = CHAT_FILTER_DEF_BY_KEY[key]
+  if def and def.color then
+    return norm_color(def.color)
+  end
+  return {1, 1, 1, 1}
 end
 
+-- Color a chat message by its category. This is simple and predictable: every
+-- message in a category renders in that category's (configurable) color.
 local function get_chat_color(e)
-  local modes_to_try = {
-    norm_mode(e.mode_modified),
-    norm_mode(e.mode),
-    e.mode_modified,
-    e.mode,
-  }
-
-  for _, m in ipairs(modes_to_try) do
-    if m and tradutor.user_palette[tostring(m)] then
-      return norm_color(tradutor.user_palette[tostring(m)])
-    end
-  end
-
-  if e.color and type(e.color) == 'table' and #e.color >= 3 then
-    return norm_color({ e.color[1], e.color[2], e.color[3], e.color[4] })
-  end
-  if e.rgba and type(e.rgba) == 'table' and #e.rgba >= 3 then
-    return norm_color({ e.rgba[1], e.rgba[2], e.rgba[3], e.rgba[4] })
-  end
-
-  local cm = AshitaCore and AshitaCore:GetChatManager()
-  if cm and cm.GetTypeColor then
-    for _, m in ipairs(modes_to_try) do
-      if m then
-        local argb = cm:GetTypeColor(m)
-        local col = argb_to_rgba(argb)
-        if col then return norm_color(col) end
-      end
-    end
-  end
-
-  local table_id, code = extract_color_tag(e.message_modified) or extract_color_tag(e.message)
-  if table_id and code then
-    local c = cm_color(table_id, code)
-    if c then return norm_color(c) end
-  end
-
-  if chat.getModeColor then
-    for _, m in ipairs(modes_to_try) do
-      if m then
-        local c = chat.getModeColor(m)
-        if c and #c >= 3 then return norm_color({ c[1], c[2], c[3], c[4] }) end
-      end
-    end
-  end
-
-  local m = modes_to_try[1] or modes_to_try[2] or 0
-  local m8 = bit.band(m, 0xFF)
-  local fallback = {
-    [0x00] = {1.00, 1.00, 1.00, 1},
-    [0x01] = {1.00, 0.65, 0.35, 1},
-    [0x02] = {1.00, 1.00, 0.40, 1},
-    [0x03] = {1.00, 0.55, 0.85, 1},
-    [0x04] = {0.45, 0.80, 1.00, 1},
-    [0x05] = {0.45, 1.00, 0.45, 1},
-    [0x06] = {0.70, 0.90, 0.40, 1},
-    [0x09] = {1.00, 1.00, 1.00, 1},
-    [0x0D] = {0.45, 0.80, 1.00, 1},
-    [0x0E] = {0.45, 0.80, 1.00, 1},
-    [0x17] = {0.45, 1.00, 0.45, 1},
-    [0x19] = {1.00, 0.55, 0.85, 1},
-  }
-  return norm_color(fallback[m] or fallback[m8] or {1,1,1,1})
-end
-
-local function detect_modes()
-  local cm = AshitaCore and AshitaCore:GetChatManager()
-  if not cm or not cm.GetTypeColor then return 0 end
-  local added = 0
-  for m = 0, 255 do
-    local argb = cm:GetTypeColor(m)
-    if argb and type(argb) == 'number' and argb ~= 0 then
-      local key = tostring(bit.band(m, 0xFF))
-      if not tradutor.user_palette[key] then
-        local col = argb_to_rgba(argb)
-        if col then
-          tradutor.user_palette[key] = norm_color(col)
-          added = added + 1
-        end
-      end
-    end
-  end
-  if added > 0 then
-    palette_dirty = true
-  end
-  return added
+  local key = chat_filter_key(e.mode_modified or e.mode)
+  return category_color(key)
 end
 
 local function load_ini()
@@ -567,10 +399,16 @@ local function load_ini()
             end
             tradutor.settings.copas_interval = math.max(1, interval)
           end
-        elseif section == 'ChannelColors' then
-          local r, g, b, a = value:match('([%d%.]+),%s*([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)')
-          if r and g and b and a then
-            tradutor.user_palette[key] = {tonumber(r), tonumber(g), tonumber(b), tonumber(a)}
+        elseif section == 'ChatColors' then
+          -- Per-category color override: key = category key, value = r,g,b[,a].
+          if CHAT_FILTER_DEF_BY_KEY[key] ~= nil then
+            local r, g, b, a = value:match('([%d%.]+),%s*([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)')
+            if not r then
+              r, g, b = value:match('([%d%.]+),%s*([%d%.]+),%s*([%d%.]+)')
+            end
+            if r and g and b then
+              tradutor.settings.chat_colors[key] = { tonumber(r), tonumber(g), tonumber(b), tonumber(a) or 1.0 }
+            end
           end
         end
       end
@@ -622,18 +460,20 @@ local function save_ini()
   f:write(string.format('copas_budget_ms = %.2f\n', tradutor.settings.copas_budget * 1000))
   f:write(string.format('frame_interval = %d\n\n', tradutor.settings.copas_interval))
   
-  f:write('[ChannelColors]\n')
-  f:write('# Format: mode_id = r, g, b, a (values from 0.0 to 1.0)\n')
-  local modes = sorted_keys(tradutor.user_palette)
-  for _, key in ipairs(modes) do
-    local col = tradutor.user_palette[key]
+  f:write('[ChatColors]\n')
+  f:write('# Format: category = r, g, b, a (values from 0.0 to 1.0)\n')
+  f:write('# Categories: ')
+  local names = {}
+  for _, def in ipairs(CHAT_FILTER_DEFS) do names[#names + 1] = def.key end
+  f:write(table.concat(names, ', ') .. '\n')
+  for _, def in ipairs(CHAT_FILTER_DEFS) do
+    local col = tradutor.settings.chat_colors[def.key]
     if col then
-      f:write(string.format('%s = %.3f, %.3f, %.3f, %.3f\n', key, col[1], col[2], col[3], col[4] or 1.0))
+      f:write(string.format('%s = %.3f, %.3f, %.3f, %.3f\n', def.key, col[1], col[2], col[3], col[4] or 1.0))
     end
   end
   
   f:close()
-  palette_dirty = false
 end
 
 local function draw_config_contents()
@@ -681,7 +521,8 @@ local function draw_config_contents()
     imgui.PopItemWidth()
   end
 
-  if imgui.CollapsingHeader('Chat filters', ImGuiTreeNodeFlags_DefaultOpen) then
+  if imgui.CollapsingHeader('Chat categories', ImGuiTreeNodeFlags_DefaultOpen) then
+    imgui.TextDisabled('Toggle which message types are translated, and pick each one\'s color.')
     if imgui.Button('All on', {90, 0}) then
       chat_filter_all(true)
       save_ini()
@@ -691,13 +532,41 @@ local function draw_config_contents()
       chat_filter_all(false)
       save_ini()
     end
+    imgui.SameLine()
+    if imgui.Button('Reset colors', {110, 0}) then
+      tradutor.settings.chat_colors = {}
+      save_ini()
+    end
+
+    imgui.Separator()
 
     for _, def in ipairs(CHAT_FILTER_DEFS) do
-      local enabled = {tradutor.settings.chat_filters[def.key] ~= false}
-      if imgui.Checkbox(def.label, enabled) then
+      imgui.PushID(def.key)
+
+      -- On/off toggle for the category.
+      local enabled = { tradutor.settings.chat_filters[def.key] ~= false }
+      if imgui.Checkbox('##on', enabled) then
         tradutor.settings.chat_filters[def.key] = enabled[1]
         save_ini()
       end
+      if imgui.IsItemHovered() then imgui.SetTooltip(def.desc) end
+
+      -- Color swatch (no '#' input row; just the editable swatch).
+      imgui.SameLine()
+      local c = category_color(def.key)
+      local cc = { c[1], c[2], c[3], c[4] }
+      if imgui.ColorEdit4('##col', cc, ImGuiColorEditFlags_NoInputs) then
+        tradutor.settings.chat_colors[def.key] = { cc[1], cc[2], cc[3], cc[4] }
+        save_ini()
+      end
+      if imgui.IsItemHovered() then imgui.SetTooltip('Color for ' .. def.label .. ' messages.') end
+
+      -- Label, colored to match the category so it doubles as a legend.
+      imgui.SameLine()
+      imgui.TextColored(c, def.label)
+      if imgui.IsItemHovered() then imgui.SetTooltip(def.desc) end
+
+      imgui.PopID()
     end
   end
 
@@ -708,43 +577,6 @@ local function draw_config_contents()
 
     if imgui.Button('Clear Cache', {-1, 0}) then
       clear_cache()
-    end
-  end
-
-  if imgui.CollapsingHeader('Channel colors') then
-    imgui.Text('Manual per mode id')
-    local modes = sorted_keys(tradutor.user_palette)
-    for _, key in ipairs(modes) do
-      local col = tradutor.user_palette[key]
-      if col then
-        local c = { col[1], col[2], col[3], col[4] or 1 }
-        imgui.PushID(key)
-        if imgui.ColorEdit4(string.format('Mode %s', key), c, ImGuiColorEditFlags_NoInputs) then
-          tradutor.user_palette[key] = { c[1], c[2], c[3], c[4] }
-          palette_dirty = true
-        end
-        imgui.PopID()
-      end
-    end
-    imgui.PushItemWidth(80)
-    imgui.InputInt('##addmode', tradutor.add_mode)
-    imgui.PopItemWidth()
-    imgui.SameLine()
-    if imgui.Button('Add') and tradutor.add_mode[1] >= 0 then
-      tradutor.user_palette[tostring(tradutor.add_mode[1])] = {1,1,1,1}
-      palette_dirty = true
-    end
-
-    if palette_dirty then
-      if imgui.Button('Save##pal') then
-        save_ini()
-      end
-      imgui.SameLine()
-      if imgui.Button('Reset##pal') then
-        tradutor.user_palette = {}
-        palette_dirty = false
-        save_ini()
-      end
     end
   end
 end
@@ -767,20 +599,6 @@ local function extract_translation(body, data)
     if txt then
       txt = txt:gsub('\\"','"'):gsub('\\\\','\\')
       return decode_unicode(txt)
-    end
-  end
-  return nil
-end
-
-local function extract_detected_language(body, data)
-  -- Try to extract detected language from response
-  -- Google Translate API returns detected language in data[3] or data[9]
-  if type(data) == 'table' then
-    if type(data[3]) == 'string' and #data[3] > 0 then
-      return data[3]
-    end
-    if type(data[9]) == 'table' and type(data[9][1]) == 'table' and type(data[9][1][1]) == 'string' then
-      return data[9][1][1]
     end
   end
   return nil
@@ -898,15 +716,12 @@ end
 
 local function draw_message(m)
   imgui.BeginGroup()
+    local text = m.text or ''
     if m.name then
-      local name_col = m.color or name_color(m.name)
-      imgui.PushStyleColor(ImGuiCol_Text, name_col)
-      imgui.Text(m.name .. ':')
-      imgui.PopStyleColor()
-      imgui.SameLine()
+      text = m.name .. ': ' .. text
     end
 
-    local segs = build_segments(m.text or '', m.color or {1,1,1,1})
+    local segs = build_segments(text, m.color or {1,1,1,1})
     render_segments(segs, m.color or {1,1,1,1})
     
     -- Tooltip with original text and click to copy
@@ -935,39 +750,28 @@ end
 local function translate_async(content, color, name)
   local key = content or ''
 
-  -- Mark as translating and update language status immediately
-  tradutor.is_translating = true
-  if tradutor.settings.auto_detect then
-    -- Will be updated when translation completes
-    tradutor.last_detected_lang = nil
-  else
-    tradutor.last_detected_lang = tradutor.settings.source_lang:upper()
-  end
-
-  -- Check cache
+  -- Show a cached result if we have one. The cache may hold a value equal to
+  -- the original (text that was already in the target language); we still
+  -- display it so nothing is dropped.
   local cached = tradutor.cache[key]
-  if cached and cached ~= key then
+  if cached ~= nil then
     append_message({
-      text    = cached,
-      color   = color,
-      name    = name,
-      orig    = key,
+      text  = cached,
+      color = color,
+      name  = name,
+      orig  = key,
     })
     return
-  elseif cached == key then
-    tradutor.cache[key] = nil
   end
 
   if #tradutor.queue < MAX_QUEUE then
     table.insert(tradutor.queue, {
-      orig   = key,
-      send   = content,
-      color  = color,
-      name   = name,
+      orig  = key,
+      send  = content,
+      color = color,
+      name  = name,
     })
     pump_queue()
-  else
-    tradutor.is_translating = false
   end
 end
 
@@ -983,7 +787,6 @@ pump_queue = function()
       local path = '/translate_a/single?client=gtx&sl=' .. src .. '&tl=' .. tgt .. '&dt=t&q='
                  .. urlencode(send_text)
       local tr = nil
-      local detected_lang = nil
 
       local body, code = http_get('translate.googleapis.com', path)
       if code == 200 and type(body) == 'string' then
@@ -991,35 +794,24 @@ pump_queue = function()
         local parsed = ok and extract_translation(body, data) or extract_translation(body, nil)
         if parsed and #parsed > 0 then
           tr = parsed
-          -- Extract detected language if auto-detect is enabled
-          if tradutor.settings.auto_detect and ok then
-            detected_lang = extract_detected_language(body, data)
-          end
         end
       end
 
-      if tr ~= nil and tr ~= job.orig then
-        tradutor.cache[job.orig] = tr
-        append_message({
-          text = tr,
-          color = job.color,
-          name = job.name,
-          orig = job.orig,
-        })
-      end
-      
-      -- Update last detected language
-      if detected_lang then
-        tradutor.last_detected_lang = detected_lang:upper()
-      elseif not tradutor.settings.auto_detect then
-        tradutor.last_detected_lang = tradutor.settings.source_lang:upper()
-      end
+      -- Use the translation when we got one; otherwise (no result, or text
+      -- already in the target language) fall back to the original so messages
+      -- are never silently dropped. Cache the displayed text either way to
+      -- avoid re-requesting the same line.
+      local display = (tr ~= nil) and tr or job.orig
+      tradutor.cache[job.orig] = display
+      append_message({
+        text  = display,
+        color = job.color,
+        name  = job.name,
+        orig  = job.orig,
+      })
 
-      -- Mark translation as complete and record time
-      tradutor.last_translation_time = socket.gettime and socket.gettime() or os.clock()
       if tradutor.inflight <= 1 and #tradutor.queue == 0 then
-        tradutor.is_translating = false
-        -- Save cache when all translations are done
+        -- Save cache once all in-flight translations are done.
         save_cache()
       end
 
@@ -1102,27 +894,9 @@ ashita.events.register('d3d_present', 'present_cb', function()
   imgui.SetNextWindowBgAlpha(tradutor.settings.window_alpha)
   tradutor.settings.window_color[4] = tradutor.settings.window_alpha
   imgui.PushStyleColor(ImGuiCol_WindowBg, tradutor.settings.window_color)
-  imgui.PushStyleColor(ImGuiCol_Button,        {0, 0, 0, 0.30})
-  imgui.PushStyleColor(ImGuiCol_ButtonHovered, {1, 1, 1, 0.15})
-  imgui.PushStyleColor(ImGuiCol_ButtonActive,  {1, 1, 1, 0.30})
-  imgui.PushStyleColor(ImGuiCol_Border,        {0, 0, 0, 0})
-  imgui.PushStyleColor(ImGuiCol_FrameBg,              {0.18, 0.18, 0.18, 0.82})
-  imgui.PushStyleColor(ImGuiCol_FrameBgHovered,       {0.28, 0.28, 0.28, 0.88})
-  imgui.PushStyleColor(ImGuiCol_FrameBgActive,        {0.36, 0.36, 0.36, 0.95})
-  imgui.PushStyleColor(ImGuiCol_ScrollbarBg,          {0.05, 0.05, 0.05, 0.35})
-  imgui.PushStyleColor(ImGuiCol_ScrollbarGrab,        {0.42, 0.42, 0.42, 0.72})
-  imgui.PushStyleColor(ImGuiCol_ScrollbarGrabHovered, {0.56, 0.56, 0.56, 0.86})
-  imgui.PushStyleColor(ImGuiCol_ScrollbarGrabActive,  {0.70, 0.70, 0.70, 0.96})
-  imgui.PushStyleColor(ImGuiCol_CheckMark,            {0.82, 0.82, 0.82, 1.00})
-  imgui.PushStyleColor(ImGuiCol_SliderGrab,           {0.58, 0.58, 0.58, 0.92})
-  imgui.PushStyleColor(ImGuiCol_SliderGrabActive,     {0.78, 0.78, 0.78, 1.00})
-  imgui.PushStyleColor(ImGuiCol_Header,               {0.24, 0.24, 0.24, 0.82})
-  imgui.PushStyleColor(ImGuiCol_HeaderHovered,        {0.34, 0.34, 0.34, 0.90})
-  imgui.PushStyleColor(ImGuiCol_HeaderActive,         {0.44, 0.44, 0.44, 0.96})
-  imgui.PushStyleColor(ImGuiCol_ResizeGrip,           {0.50, 0.50, 0.50, 0.55})
-  imgui.PushStyleColor(ImGuiCol_ResizeGripHovered,    {0.68, 0.68, 0.68, 0.78})
-  imgui.PushStyleColor(ImGuiCol_ResizeGripActive,     {0.86, 0.86, 0.86, 0.95})
-  imgui.PushStyleColor(ImGuiCol_TextSelectedBg,       {0.55, 0.55, 0.55, 0.45})
+  for _, c in ipairs(THEME_COLORS) do
+    imgui.PushStyleColor(c[1], c[2])
+  end
   
   -- Set window position and size from settings
   imgui.SetNextWindowPos(tradutor.settings.window_pos, ImGuiCond_FirstUseEver)
@@ -1130,63 +904,20 @@ ashita.events.register('d3d_present', 'present_cb', function()
   
   local window_flags = bit.bor(ImGuiWindowFlags_NoTitleBar, ImGuiWindowFlags_NoCollapse, ImGuiWindowFlags_NoSavedSettings)
   if imgui.Begin('LingoXI', true, window_flags) then
-    -- Save current window position and size
-    local pos = imgui.GetWindowPos()
-    local size = imgui.GetWindowSize()
-    tradutor.settings.window_pos = {vec2x(pos), vec2y(pos)}
-    tradutor.settings.window_size = {vec2x(size), vec2y(size)}
-    -- Toolbar with language status (left) and settings icon (right)
-    local now = socket.gettime and socket.gettime() or os.clock()
-    local show_status = false and tradutor.settings.show_lang_status and 
-                       (tradutor.is_translating or (now - tradutor.last_translation_time) < 3)
-    
-    if show_status and tradutor.last_detected_lang then
-      local lang_names = {
-        EN = 'English',
-        PT = 'Portuguese',
-        ES = 'Spanish',
-        FR = 'French',
-        DE = 'German',
-        IT = 'Italian',
-        JA = 'Japanese',
-        ZH = 'Chinese',
-        KO = 'Korean',
-        RU = 'Russian',
-        AR = 'Arabic',
-        NL = 'Dutch',
-        PL = 'Polish',
-        TR = 'Turkish',
-        SV = 'Swedish',
-        DA = 'Danish',
-        NO = 'Norwegian',
-        FI = 'Finnish',
-      }
-      
-      local src_code = tradutor.last_detected_lang
-      local tgt_code = tradutor.settings.target_lang:upper()
-      local src_name = lang_names[src_code] or src_code
-      local tgt_name = lang_names[tgt_code] or tgt_code
-      
-      local lang_text = string.format('%s → %s', src_name, tgt_name)
-      imgui.TextColored({0.7, 0.7, 0.7, 1}, lang_text)
-      imgui.SameLine()
+    -- Persist the live window position and size (this binding returns two
+    -- numbers, so capture both; saving only the first duplicated x into y).
+    local pos_x, pos_y = imgui.GetWindowPos()
+    local size_w, size_h = imgui.GetWindowSize()
+    if math.abs((tradutor.settings.window_pos[1] or 0) - pos_x) >= 1 or
+       math.abs((tradutor.settings.window_pos[2] or 0) - pos_y) >= 1 or
+       math.abs((tradutor.settings.window_size[1] or 0) - size_w) >= 1 or
+       math.abs((tradutor.settings.window_size[2] or 0) - size_h) >= 1 then
+      tradutor.settings.window_pos = {pos_x, pos_y}
+      tradutor.settings.window_size = {size_w, size_h}
     end
-    
-    if false then
-    local total_w = 24
-    local cur_x = imgui.GetCursorPosX()
-    local avail = imgui.GetContentRegionAvail()
-    imgui.SetCursorPosX(cur_x + math.max(0, vec2x(avail) - total_w))
-    if draw_settings_tool_button(total_w) then
-      tradutor.settings_open[1] = not tradutor.settings_open[1]
-    end
-    imgui.Spacing()
-    end
-
     -- Calculate widths
-    local sett_w = 0
-    local content_avail = imgui.GetContentRegionAvail()
-    local msg_w = math.max(100, vec2x(content_avail))
+    local avail_w = imgui.GetContentRegionAvail()
+    local msg_w = math.max(100, avail_w)
 
     -- Messages panel
     tradutor.settings.text_bg_color[4] = tradutor.settings.text_bg_alpha
@@ -1195,120 +926,17 @@ ashita.events.register('d3d_present', 'present_cb', function()
       local scroll_y = imgui.GetScrollY()
       local scroll_max = imgui.GetScrollMaxY()
       tradutor.follow_bottom = scroll_max <= 0 or scroll_y >= (scroll_max - SCROLL_FOLLOW_THRESHOLD)
-      if false and #tradutor.messages == 0 then
-        imgui.TextColored({1,0,0,1}, 'Waiting for translations…')
-      else
-        for _, m in ipairs(tradutor.messages) do
-          draw_message(m)
-        end
+      for _, m in ipairs(tradutor.messages) do
+        draw_message(m)
+      end
 
-        if tradutor.scroll_to_bottom then
-          imgui.SetScrollHereY(1.0)
-          tradutor.scroll_to_bottom = false
-          tradutor.follow_bottom = true
-        end
+      if tradutor.scroll_to_bottom then
+        imgui.SetScrollHereY(1.0)
+        tradutor.scroll_to_bottom = false
+        tradutor.follow_bottom = true
       end
     imgui.EndChild()
     imgui.PopStyleColor()
-
-    -- Settings panel (right)
-    if false and tradutor.settings_open[1] then
-      imgui.SameLine()
-      imgui.PushStyleColor(ImGuiCol_ChildBg, FANCY_PANEL_COLOR)
-      imgui.BeginChild('config_panel', {sett_w, 0}, false)
-        if imgui.CollapsingHeader('Appearance', ImGuiTreeNodeFlags_DefaultOpen) then
-          imgui.ColorEdit3('Window', tradutor.settings.window_color, ImGuiColorEditFlags_NoInputs)
-          imgui.PushItemWidth(150)
-          local wa = {tradutor.settings.window_alpha}
-          if imgui.SliderFloat('Win Alpha', wa, 0.0, 1.0, '%.2f') then
-            tradutor.settings.window_alpha = wa[1]
-            save_ini()
-          end
-          imgui.PopItemWidth()
-        end
-
-        if imgui.CollapsingHeader('Language', ImGuiTreeNodeFlags_DefaultOpen) then
-          local auto = {tradutor.settings.auto_detect}
-          if imgui.Checkbox('Auto-detect language', auto) then
-            tradutor.settings.auto_detect = auto[1]
-            save_ini()
-          end
-          local src = {tradutor.settings.source_lang}
-          local tgt = {tradutor.settings.target_lang}
-          imgui.PushItemWidth(100)
-          if imgui.InputText('Source', src, 16) then
-            tradutor.settings.source_lang = src[1]
-            save_ini()
-          end
-          if imgui.InputText('Target', tgt, 16) then
-            tradutor.settings.target_lang = tgt[1]
-            save_ini()
-          end
-          imgui.PopItemWidth()
-          
-          local budget_ms = {(tradutor.settings.copas_budget or COPAS_BUDGET) * 1000}
-          imgui.PushItemWidth(110)
-          if imgui.SliderFloat('Copas budget (ms)', budget_ms, 0.01, 5.0, '%.2f') then
-            tradutor.settings.copas_budget = math.max(0.00001, budget_ms[1] / 1000)
-            save_ini()
-          end
-          local interval = {tradutor.settings.copas_interval or 1}
-          if imgui.SliderInt('Frame interval', interval, 1, 60) then
-            tradutor.settings.copas_interval = math.max(1, interval[1])
-            save_ini()
-          end
-          imgui.PopItemWidth()
-        end
-        
-        if imgui.CollapsingHeader('Cache', ImGuiTreeNodeFlags_DefaultOpen) then
-          local cache_count = 0
-          for _ in pairs(tradutor.cache) do cache_count = cache_count + 1 end
-          imgui.Text(string.format('Cached: %d', cache_count))
-          
-          if imgui.Button('Clear Cache', {-1, 0}) then
-            clear_cache()
-          end
-        end
-        
-        if imgui.CollapsingHeader('Channel colors') then
-          imgui.Text('Manual per mode id')
-          local modes = sorted_keys(tradutor.user_palette)
-          for _, key in ipairs(modes) do
-            local col = tradutor.user_palette[key]
-            if col then
-              local c = { col[1], col[2], col[3], col[4] or 1 }
-              imgui.PushID(key)
-              if imgui.ColorEdit4(string.format('Mode %s', key), c, ImGuiColorEditFlags_NoInputs) then
-                tradutor.user_palette[key] = { c[1], c[2], c[3], c[4] }
-                palette_dirty = true
-              end
-              imgui.PopID()
-            end
-          end
-          imgui.PushItemWidth(80)
-          imgui.InputInt('##addmode', tradutor.add_mode)
-          imgui.PopItemWidth()
-          imgui.SameLine()
-          if imgui.Button('Add') and tradutor.add_mode[1] >= 0 then
-            tradutor.user_palette[tostring(tradutor.add_mode[1])] = {1,1,1,1}
-            palette_dirty = true
-          end
-
-          if palette_dirty then
-            if imgui.Button('Save##pal') then
-              save_ini()
-            end
-            imgui.SameLine()
-            if imgui.Button('Reset##pal') then
-              tradutor.user_palette = {}
-              palette_dirty = false
-              save_ini()
-            end
-          end
-        end
-      imgui.EndChild()
-      imgui.PopStyleColor()
-    end
   end
 
   imgui.End()
@@ -1321,8 +949,8 @@ ashita.events.register('d3d_present', 'present_cb', function()
       imgui.SameLine()
       local close_w = 24
       local cur_x = imgui.GetCursorPosX()
-      local avail = imgui.GetContentRegionAvail()
-      imgui.SetCursorPosX(cur_x + math.max(0, vec2x(avail) - close_w))
+      local avail_w = imgui.GetContentRegionAvail()
+      imgui.SetCursorPosX(cur_x + math.max(0, avail_w - close_w))
       if imgui.Button('X##close_config', {close_w, 0}) then
         tradutor.settings_open[1] = false
       end
@@ -1332,7 +960,7 @@ ashita.events.register('d3d_present', 'present_cb', function()
     imgui.End()
   end
 
-  imgui.PopStyleColor(22)
+  imgui.PopStyleColor(THEME_PUSH_COUNT)
 end)
 
 ashita.events.register('load', 'load_cb', function()
@@ -1341,10 +969,6 @@ ashita.events.register('load', 'load_cb', function()
 end)
 
 ashita.events.register('unload', 'unload_cb', function()
-  if palette_dirty then
-    save_ini()
-  else
-    save_ini()
-  end
+  save_ini()
   save_cache()
 end)
