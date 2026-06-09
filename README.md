@@ -1,35 +1,76 @@
-﻿# LingoXI
+# LingoXI
 
 Real-time chat translation addon for Final Fantasy XI using Ashita v4.
 
-LingoXI listens to incoming FFXI chat messages, translates them asynchronously with Google Translate, and displays only the translated result in a clean overlay window. Repeated lines are served from a local cache, so common NPC dialogue and recurring chat messages appear faster after the first translation.
-
-The chat window uses a minimal transparent black style inspired by FancyChat. It keeps the main view focused on translated text only, with no toolbar, title bar, status line, or pending/OK translation markers.
+LingoXI translates incoming chat asynchronously, keeps a local cache for repeated lines, and can show the translated text in a clean ImGui overlay or print it back into the in-game chat. It is built to stay local to your client: it reads chat, requests translations, and optionally adds translated lines to your own chat log.
 
 ## Features
 
-- Asynchronous translation with short request timeouts.
+- Asynchronous translation through Google Translate.
 - Local translation cache stored in `cache.json`.
-- Duplicate NPC/story message protection.
-- Auto-scroll that follows new messages only when the user is already near the bottom.
+- Compact transparent overlay window for translated chat.
+- Optional translated lines in the in-game chat.
+- Optional `[LingoXI]` prefix for printed in-game translations.
+- Client color support for both the overlay and printed chat.
+- Custom colors per chat category when client colors are disabled.
 - Configurable source and target languages.
+- Auto-detect source language option.
 - Configurable chat filters by category.
-- Custom channel colors by chat mode id.
-- Transparent, resizable ImGui chat window with neutral gray controls.
+- Auto-translate terms are protected so entries like `[Auto Refresh]` are not translated.
+- `/lingo` and `/lingoxi` command aliases.
+
+## Install
+
+Copy the `LingoXI` folder to:
+
+```text
+Ashita/addons/LingoXI
+```
+
+Then load it in game:
+
+```text
+/addon load LingoXI
+```
 
 ## Commands
 
-Open the configuration window:
-
 ```text
+/lingo config
 /lingoxi config
 ```
 
-The config window has an `X` button to close it.
+Open the configuration window.
+
+```text
+/lingo hide
+/lingoxi hide
+```
+
+Hide the main translation overlay.
+
+```text
+/lingo show
+/lingoxi show
+```
+
+Show the main translation overlay again.
+
+## Configuration
+
+Open `/lingo config` to configure:
+
+- Overlay visibility and transparency.
+- In-game translated chat output.
+- In-game chat prefix.
+- Source and target languages.
+- Auto-detect source language.
+- Client colors or custom category colors.
+- Chat category filters.
 
 ## Chat Filters
 
-Open `/lingoxi config` and use `Chat filters` to choose which categories should be translated and displayed:
+LingoXI can filter these categories before sending anything to translation:
 
 - NPC / story
 - Local / say
@@ -43,18 +84,40 @@ Open `/lingoxi config` and use `Chat filters` to choose which categories should 
 - Combat
 - Other
 
-Disabled categories are ignored before translation, so they do not enter the translation queue or cache.
+Disabled categories are ignored before translation, so they do not enter the queue or cache.
 
 ## Languages
 
 Common language codes:
 
-`en` English, `pt` Portuguese, `es` Spanish, `fr` French, `de` German, `it` Italian, `ja` Japanese, `zh` Chinese, `ko` Korean, `ru` Russian.
+```text
+en English
+pt Portuguese
+es Spanish
+fr French
+de German
+it Italian
+ja Japanese
+zh Chinese
+ko Korean
+ru Russian
+```
 
 ## Files
 
-- `LingoXI.ini`: saved settings, window position, language options, filters, performance options, and channel colors.
-- `cache.json`: local translation cache.
+- `LingoXI.lua`: addon entry point.
+- `libs/`: bundled Lua networking and async libraries.
+- `LingoXI.ini`: saved settings, window position, filters, language options, and colors.
+- `cache.json`: local translation cache created at runtime.
+
+`LingoXI.ini` and `cache.json` are created in the addon folder when needed.
+
+## Notes
+
+- LingoXI does not send gameplay packets or automate gameplay actions.
+- New translations require internet access.
+- Cached translations can be shown without requesting the same line again.
+- Printed in-game translations are local chat lines added by the client.
 
 ---
 
@@ -62,12 +125,9 @@ Common language codes:
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow.svg?style=flat&logo=buy-me-a-coffee)](https://buymeacoffee.com/rockmizx)
 
-
 ## Third-party libraries
 
-LingoXI bundles the following third-party Lua libraries in `libs/`. All are
-distributed under the MIT license. Their copyright notices are reproduced here
-to satisfy the license terms; the original authors retain all rights.
+LingoXI bundles the following third-party Lua libraries in `libs/`. All are distributed under the MIT license. Their copyright notices are reproduced here to satisfy the license terms; the original authors retain all rights.
 
 - LuaSocket (`socket/`, `socket/url.lua`) - Copyright (c) Diego Nehab. MIT license.
 - Copas (`copas.lua`) - Copyright (c) Kepler Project / Copas contributors. MIT license.
